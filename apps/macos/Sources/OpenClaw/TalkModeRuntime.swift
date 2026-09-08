@@ -62,6 +62,7 @@ actor TalkModeRuntime {
 
     private var captureTask: Task<Void, Never>?
     private var silenceTask: Task<Void, Never>?
+    private var idleTimeoutTask: Task<Void, Never>?
     var phase: TalkModePhase = .idle
     var isEnabled = false
     var isPaused = false
@@ -286,6 +287,8 @@ actor TalkModeRuntime {
         self.captureTask = nil
         self.silenceTask?.cancel()
         self.silenceTask = nil
+        self.idleTimeoutTask?.cancel()
+        self.idleTimeoutTask = nil
         self.lastTranscript = ""
         self.lastHeard = nil
         self.lastInteractionAt = nil
@@ -500,6 +503,10 @@ actor TalkModeRuntime {
         self.silenceTask = Task { [weak self] in
             await self?.silenceLoop()
         }
+        self.idleTimeoutTask?.cancel()
+        self.idleTimeoutTask = Task { [weak self] in
+            await self?.idleTimeoutLoop()
+        }
     }
 
     private func silenceLoop() async {
@@ -508,9 +515,14 @@ actor TalkModeRuntime {
         }
     }
 
+    private func idleTimeoutLoop() async {
+        while self.isEnabled, await SimpleTaskSupport.waitForNextOperation(interval: 0.2) {
+            await self.checkIdleTimeout()
+        }
+    }
+
     private func checkSilence() async {
         guard !self.isPaused else { return }
-        await self.checkIdleTimeout()
         guard self.isEnabled, self.phase == .listening else { return }
         let transcript = self.lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !transcript.isEmpty else { return }
@@ -521,6 +533,9 @@ actor TalkModeRuntime {
     }
 
     private func checkIdleTimeout() async {
+        guard !self.isPaused else { return }
+        // Active playback is protected; stalled thinking/reply waits remain bounded.
+        guard self.phase != .speaking else { return }
         guard let idleTimeout else { return }
         let anchor = self.lastInteractionAt ?? Date()
         if self.lastInteractionAt == nil {
@@ -1654,3 +1669,12 @@ extension TalkModeRuntime {
         return spoken.contains(probe)
     }
 }
+
+#if DEBUG
+extension TalkModeRuntime {
+    func _test_isSilenceMonitorActive() -> Bool {
+        guard let idleTimeoutTask else { return false }
+        return !idleTimeoutTask.isCancelled
+    }
+}
+#endif

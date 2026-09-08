@@ -1281,14 +1281,19 @@ struct TalkModeRuntimeSpeechTests {
         let runtime = TalkModeRuntime()
         let session = makeRuntimeTestRealtimeSession()
         let relayGeneration = await runtime._test_prepareEnabledRealtimeSessionForClose(session)
-        await runtime.lastInteractionAt = Date(timeIntervalSince1970: 0)
+
+        await runtime.handleRealtimeTranscript(
+            .init(role: "user", text: "first", isFinal: false),
+            relayGeneration: relayGeneration)
+        let firstAnchor = try #require(await runtime.lastInteractionAt)
+
+        try await Task.sleep(for: .milliseconds(50))
 
         await runtime.handleRealtimeTranscript(
             .init(role: "user", text: "hello", isFinal: false),
             relayGeneration: relayGeneration)
-
-        let anchor = try #require(await runtime.lastInteractionAt)
-        #expect(anchor.timeIntervalSince1970 > 1_000_000_000)
+        let secondAnchor = try #require(await runtime.lastInteractionAt)
+        #expect(secondAnchor > firstAnchor)
 
         await runtime.setEnabled(false)
         session.stop()
