@@ -618,6 +618,7 @@ extension TalkModeRuntime {
                 TalkModeController.shared.updatePhase(.speaking)
             }
         } else if !isPaused {
+            self.lastInteractionAt = Date()
             phase = .listening
             _ = await self.projectRealtimeRelay(relayGeneration, session) {
                 TalkModeController.shared.updatePhase(.listening)

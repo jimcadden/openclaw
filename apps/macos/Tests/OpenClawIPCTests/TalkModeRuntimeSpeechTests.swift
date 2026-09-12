@@ -1299,6 +1299,39 @@ struct TalkModeRuntimeSpeechTests {
         session.stop()
     }
 
+    @Test @MainActor func `relay playback completion resets idle interaction anchor`() async throws {
+        let runtime = TalkModeRuntime()
+        let session = makeRuntimeTestRealtimeSession()
+        let relayGeneration = await runtime._test_prepareEnabledRealtimeSessionForClose(session)
+
+        await runtime.handleRealtimeSpeakingChanged(true, relayGeneration: relayGeneration)
+        let speakingAnchor = try #require(await runtime.lastInteractionAt)
+
+        try await Task.sleep(for: .milliseconds(50))
+
+        await runtime.handleRealtimeSpeakingChanged(false, relayGeneration: relayGeneration)
+        let listeningAnchor = try #require(await runtime.lastInteractionAt)
+        #expect(listeningAnchor > speakingAnchor)
+
+        await runtime.setEnabled(false)
+        session.stop()
+    }
+
+    @Test @MainActor func `preserves idle timeout across offline gateway config fallback`() async {
+        let runtime = TalkModeRuntime()
+        let authoritative = Self.gatewayConfig(idleTimeoutS: 30, sourcedFromGateway: true)
+        await runtime.commitTalkConfig(authoritative, locale: "en-US")
+        #expect(await runtime._test_idleTimeoutSeconds() == 30)
+
+        let offlineFallback = Self.gatewayConfig(idleTimeoutS: nil, sourcedFromGateway: false)
+        await runtime.commitTalkConfig(offlineFallback, locale: "en-US")
+        #expect(await runtime._test_idleTimeoutSeconds() == 30)
+
+        let authoritativeDisabled = Self.gatewayConfig(idleTimeoutS: nil, sourcedFromGateway: true)
+        await runtime.commitTalkConfig(authoritativeDisabled, locale: "en-US")
+        #expect(await runtime._test_idleTimeoutSeconds() == nil)
+    }
+
     @Test func `talk speak params carry resolved voice and directive overrides`() {
         let params = TalkModeRuntime.makeTalkSpeakParams(
             text: "hello",
@@ -1333,5 +1366,42 @@ struct TalkModeRuntimeSpeechTests {
         #expect(params["normalize"]?.value as? String == "auto")
         #expect(params["language"]?.value as? String == "en")
         #expect(params["latencyTier"]?.value as? Int == 3)
+    }
+
+    private static func gatewayConfig(
+        idleTimeoutS: Int?,
+        sourcedFromGateway: Bool) -> TalkModeGatewayConfigState
+    {
+        var talk: [String: Any] = [:]
+        if let idleTimeoutS {
+            talk["idleTimeoutS"] = idleTimeoutS
+        }
+        let snapshot = ConfigSnapshot(
+            path: nil,
+            exists: true,
+            raw: nil,
+            hash: nil,
+            parsed: nil,
+            valid: true,
+            config: ["talk": AnyCodable(talk)],
+            issues: nil)
+        let parsed = TalkModeGatewayConfigParser.parse(
+            snapshot: snapshot,
+            defaultProvider: "elevenlabs",
+            defaultModelIdFallback: "eleven_v3",
+            defaultSilenceTimeoutMs: TalkDefaults.silenceTimeoutMs,
+            envVoice: nil,
+            sagVoice: nil,
+            envApiKey: nil)
+        return TalkModeGatewayConfigState(
+            sourcedFromGateway: sourcedFromGateway,
+            snapshot: parsed.snapshot,
+            voiceId: parsed.voiceId,
+            modelId: parsed.modelId,
+            outputFormat: parsed.outputFormat,
+            apiKey: parsed.apiKey,
+            referenceAudioPath: parsed.referenceAudioPath,
+            referenceText: parsed.referenceText,
+            seamColorHex: parsed.seamColorHex)
     }
 }

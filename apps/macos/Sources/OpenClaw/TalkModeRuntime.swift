@@ -1586,7 +1586,10 @@ extension TalkModeRuntime {
                         "\(configuredSilenceMs, privacy: .public)ms -> 2000ms")
         }
         self.silenceWindow = TimeInterval(effectiveSilenceMs) / 1000
-        self.idleTimeout = cfg.snapshot.idleTimeoutS.map(TimeInterval.init)
+        // Gateway success is authoritative for idle timeout; offline fallback keeps the last value.
+        if cfg.sourcedFromGateway {
+            self.idleTimeout = cfg.snapshot.idleTimeoutS.map(TimeInterval.init)
+        }
         self.speechLocaleID = cfg.snapshot.speechLocaleID
         self.apiKey = cfg.apiKey
         self.mlxReferenceAudioPath = cfg.referenceAudioPath
@@ -1675,6 +1678,10 @@ extension TalkModeRuntime {
     func _test_isSilenceMonitorActive() -> Bool {
         guard let idleTimeoutTask else { return false }
         return !idleTimeoutTask.isCancelled
+    }
+
+    func _test_idleTimeoutSeconds() -> TimeInterval? {
+        self.idleTimeout
     }
 }
 #endif
