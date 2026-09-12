@@ -94,6 +94,7 @@ type ModelCatalogRpcEntry = {
   input?: string[];
   reasoning?: boolean;
   supportsTools?: boolean;
+  tags?: string[];
   agentRuntime?: GatewayAgentRuntime;
 };
 
@@ -102,6 +103,11 @@ type AgentCatalogFixtureEntry = {
   provider: string;
   name?: string;
   contextWindow?: number;
+};
+
+const OPENCLAW_DEVICE_PLACEMENT: NonNullable<GatewayAgentRuntime["devicePlacement"]> = {
+  requiredNodeCommands: [],
+  consumesWorkerSlot: true,
 };
 
 const buildAgentCatalogFixture = (): AgentCatalogFixtureEntry[] => [
@@ -126,7 +132,7 @@ const buildAgentCatalogFixture = (): AgentCatalogFixtureEntry[] => [
   },
 ];
 
-const expectedSortedCatalog = (): ModelCatalogRpcEntry[] => [
+const expectedSortedCatalog = (gptTestZTags?: string[]): ModelCatalogRpcEntry[] => [
   {
     id: "claude-test-a",
     name: "A-Model",
@@ -148,6 +154,8 @@ const expectedSortedCatalog = (): ModelCatalogRpcEntry[] => [
     agentRuntime: {
       id: "openclaw",
       cloudPlacementSupported: true,
+      cloudPlacementExecutionMode: "worker-turn",
+      devicePlacement: OPENCLAW_DEVICE_PLACEMENT,
       devicePlacementSupported: true,
       source: "implicit",
     },
@@ -161,10 +169,13 @@ const expectedSortedCatalog = (): ModelCatalogRpcEntry[] => [
     agentRuntime: {
       id: "openclaw",
       cloudPlacementSupported: true,
+      cloudPlacementExecutionMode: "worker-turn",
+      devicePlacement: OPENCLAW_DEVICE_PLACEMENT,
       devicePlacementSupported: true,
       source: "implicit",
     },
     available: false,
+    ...(gptTestZTags ? { tags: gptTestZTags } : {}),
   },
 ];
 
@@ -251,6 +262,7 @@ const expectedConfiguredProviderModel = (params: ConfiguredProviderModelFixture)
   provider: params.provider,
   contextWindow: params.contextWindow,
   ...(params.supportsTools === undefined ? {} : { supportsTools: params.supportsTools }),
+  tags: ["default", "configured"],
 });
 
 describe("gateway server models + voicewake", () => {
@@ -406,6 +418,9 @@ describe("gateway server models + voicewake", () => {
     }
     if (expected.supportsTools !== undefined) {
       expect(models[0]?.supportsTools).toBe(expected.supportsTools);
+    }
+    if (expected.tags !== undefined) {
+      expect(models[0]?.tags).toEqual(expected.tags);
     }
   };
 
@@ -698,6 +713,26 @@ describe("gateway server models + voicewake", () => {
           agentId: "ops",
           workspaceDir: path.join(workspaceRoot, "ops-workspace"),
         });
+        const hotSkillDir = path.join(workspaceRoot, "ops-workspace", "skills", "hot-status");
+        await fs.mkdir(hotSkillDir, { recursive: true });
+        await fs.writeFile(
+          path.join(hotSkillDir, "SKILL.md"),
+          "---\nname: hot-status\ndescription: Hot status fixture\n---\n",
+          "utf8",
+        );
+        await expect
+          .poll(
+            async () => {
+              const refreshed = await rpcReq<{
+                skills?: Array<{ name?: string; eligible?: boolean }>;
+              }>(ws, "skills.status", {});
+              return refreshed.payload?.skills?.some(
+                (skill) => skill.name === "hot-status" && skill.eligible === true,
+              );
+            },
+            { interval: 20, timeout: 5_000 },
+          )
+          .toBe(true);
         expect(memory.payload).toMatchObject({ agentId: "ops" });
         expect(health.ok, JSON.stringify(health)).toBe(true);
       } finally {
@@ -788,10 +823,13 @@ describe("gateway server models + voicewake", () => {
             agentRuntime: {
               id: "openclaw",
               cloudPlacementSupported: true,
+              cloudPlacementExecutionMode: "worker-turn",
+              devicePlacement: OPENCLAW_DEVICE_PLACEMENT,
               devicePlacementSupported: true,
               source: "implicit",
             },
             available: false,
+            tags: ["default", "configured"],
           },
         ]);
       },
@@ -816,7 +854,7 @@ describe("gateway server models + voicewake", () => {
         await seedAgentModelCatalog();
         const res = await listModels({ view: "all", preparedOnly: true });
         expect(res.ok).toBe(true);
-        expect(res.payload?.models).toEqual(expectedSortedCatalog());
+        expect(res.payload?.models).toEqual(expectedSortedCatalog(["default", "configured"]));
       },
     );
   });
@@ -835,6 +873,7 @@ describe("gateway server models + voicewake", () => {
           provider: "anthropic",
           available: false,
           contextWindow: 200_000,
+          tags: ["configured"],
         },
         {
           id: "gpt-test-z",
@@ -843,10 +882,13 @@ describe("gateway server models + voicewake", () => {
           agentRuntime: {
             id: "openclaw",
             cloudPlacementSupported: true,
+            cloudPlacementExecutionMode: "worker-turn",
+            devicePlacement: OPENCLAW_DEVICE_PLACEMENT,
             devicePlacementSupported: true,
             source: "implicit",
           },
           available: false,
+          tags: ["default", "configured"],
         },
       ],
     });
@@ -866,10 +908,13 @@ describe("gateway server models + voicewake", () => {
           agentRuntime: {
             id: "openclaw",
             cloudPlacementSupported: true,
+            cloudPlacementExecutionMode: "worker-turn",
+            devicePlacement: OPENCLAW_DEVICE_PLACEMENT,
             devicePlacementSupported: true,
             source: "implicit",
           },
           available: false,
+          tags: ["default", "configured"],
         },
       ],
     });
