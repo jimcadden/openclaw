@@ -39,6 +39,7 @@ type TalkConfigPayload = {
       };
       speechLocale?: string;
       silenceTimeoutMs?: number;
+      idleTimeoutS?: number;
     };
     session?: { mainKey?: string };
     ui?: { seamColor?: string };
@@ -105,6 +106,7 @@ async function writeTalkConfig(config: {
   apiKey?: string | { source: "env" | "file" | "exec"; provider: string; id: string };
   voiceId?: string;
   silenceTimeoutMs?: number;
+  idleTimeoutS?: number;
 }) {
   const { writeConfigFile } = await import("../config/config.js");
   const providerId = config.provider ?? GENERIC_TALK_PROVIDER_ID;
@@ -112,6 +114,7 @@ async function writeTalkConfig(config: {
     talk: {
       provider: providerId,
       silenceTimeoutMs: config.silenceTimeoutMs,
+      idleTimeoutS: config.idleTimeoutS,
       providers:
         config.apiKey !== undefined || config.voiceId !== undefined
           ? {
@@ -192,7 +195,16 @@ async function expectTalkSecretsConfig(
   await withTalkConfigConnection(
     ["operator.read", "operator.write", "operator.talk.secrets"],
     async (ws) => {
-      const res = await fetchOkTalkConfig(ws, { includeSecrets: true });
+      const secrets = await import("../secrets/runtime.js");
+      const snapshot = await secrets.prepareSecretsRuntimeSnapshot({
+        config: (await (await import("../config/config.js")).readConfigFileSnapshot()).config,
+        env: process.env,
+        includeAuthStoreRefs: false,
+        loadablePluginOrigins: new Map(),
+      });
+      const response = fetchOkTalkConfig(ws, { includeSecrets: true });
+      secrets.activateSecretsRuntimeSnapshot(snapshot);
+      const res = await response;
       expect(validateTalkConfigResult(res.payload)).toBe(true);
       expectTalkConfig(res.payload?.config?.talk, {
         provider: GENERIC_TALK_PROVIDER_ID,
@@ -212,6 +224,7 @@ function expectTalkConfig(
     resolvedApiKey?: string | SecretRef;
     speechLocale?: string;
     silenceTimeoutMs?: number;
+    idleTimeoutS?: number;
   },
 ) {
   expect(talk?.provider).toBe(expected.provider);
@@ -235,6 +248,9 @@ function expectTalkConfig(
   if ("silenceTimeoutMs" in expected) {
     expect(talk?.silenceTimeoutMs).toBe(expected.silenceTimeoutMs);
   }
+  if ("idleTimeoutS" in expected) {
+    expect(talk?.idleTimeoutS).toBe(expected.idleTimeoutS);
+  }
 }
 
 describe("gateway talk.config", () => {
@@ -251,6 +267,7 @@ describe("gateway talk.config", () => {
         },
         speechLocale: "ru-RU",
         silenceTimeoutMs: 1500,
+        idleTimeoutS: 30,
       },
       session: {
         mainKey: "main-test",
@@ -268,6 +285,7 @@ describe("gateway talk.config", () => {
         apiKey: "__OPENCLAW_REDACTED__",
         speechLocale: "ru-RU",
         silenceTimeoutMs: 1500,
+        idleTimeoutS: 30,
       });
       expect(res.payload?.config?.session?.mainKey).toBe("main-test");
       expect(res.payload?.config?.ui?.seamColor).toBe("#112233");

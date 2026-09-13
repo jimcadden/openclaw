@@ -7,12 +7,6 @@ afterEach(() => {
 });
 
 describe("Control UI route and resource bases", () => {
-  it("keeps a root resource mount separate from an inferred route namespace", () => {
-    document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "");
-
-    expect(resolveControlUiPaths("/__openclaw__/new")).toEqual(["/__openclaw__", ""]);
-  });
-
   it("uses a configured Gateway mount for both routes and resources", () => {
     document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "/openclaw");
 
@@ -22,4 +16,19 @@ describe("Control UI route and resource bases", () => {
   it("retains pathname inference when no Gateway mount is declared", () => {
     expect(resolveControlUiPaths("/portable/new")).toEqual(["/portable", "/portable"]);
   });
+
+  it("keeps an explicit root mount for a cold trailing-slash plugin link", () => {
+    document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "");
+
+    expect(resolveControlUiPaths("/reports/")).toEqual(["", ""]);
+  });
+
+  it.each(["/__openclaw__", "/portable"])(
+    "keeps inferred %s routes separate from an explicit root resource mount",
+    (basePath) => {
+      document.documentElement.setAttribute(CONTROL_UI_BASE_PATH_ATTRIBUTE, "");
+
+      expect(resolveControlUiPaths(`${basePath}/new`)).toEqual([basePath, ""]);
+    },
+  );
 });

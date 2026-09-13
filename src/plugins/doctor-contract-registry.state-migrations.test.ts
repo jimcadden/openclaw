@@ -1,7 +1,7 @@
 // Covers plugin doctor state-migration registry behavior.
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
 import {
   getRegistryJitiMocks,
@@ -25,6 +25,7 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
 let clearPluginDoctorContractRegistryCache: typeof import("./doctor-contract-registry.test-fixtures.js").clearPluginDoctorContractRegistryCache;
 let listPluginDoctorLegacyConfigRules: typeof import("./doctor-contract-registry.js").listPluginDoctorLegacyConfigRules;
 let listPluginDoctorStateMigrationEntries: typeof import("./doctor-contract-registry.js").listPluginDoctorStateMigrationEntries;
+let resolveLivePluginDoctorStateMigrationInventory: typeof import("./doctor-contract-registry.js").resolveLivePluginDoctorStateMigrationInventory;
 let setPluginDoctorContractRegistryModuleLoaderFactoryForTest:
   | typeof import("./doctor-contract-registry.test-fixtures.js").setPluginDoctorContractRegistryModuleLoaderFactoryForTest
   | undefined;
@@ -39,18 +40,137 @@ afterEach(() => {
 });
 
 describe("doctor-contract-registry state migrations", () => {
-  beforeEach(async () => {
-    resetRegistryJitiMocks();
-    doctorContractWarnMock.mockReset();
+  beforeAll(async () => {
     vi.resetModules();
-    ({ listPluginDoctorLegacyConfigRules, listPluginDoctorStateMigrationEntries } =
-      await import("./doctor-contract-registry.js"));
+    ({
+      listPluginDoctorLegacyConfigRules,
+      listPluginDoctorStateMigrationEntries,
+      resolveLivePluginDoctorStateMigrationInventory,
+    } = await import("./doctor-contract-registry.js"));
     ({
       clearPluginDoctorContractRegistryCache,
       setPluginDoctorContractRegistryModuleLoaderFactoryForTest,
     } = await import("./doctor-contract-registry.test-fixtures.js"));
+  });
+
+  beforeEach(() => {
+    resetRegistryJitiMocks();
+    doctorContractWarnMock.mockReset();
+    // Loaded once in beforeAll; afterEach guards the same binding optionally because it
+    // can fire when that import never completed. Fail loudly here instead of silently
+    // running a case against the real module loader.
+    if (!setPluginDoctorContractRegistryModuleLoaderFactoryForTest) {
+      throw new Error("doctor contract registry test fixtures were not loaded");
+    }
     setPluginDoctorContractRegistryModuleLoaderFactoryForTest(mocks.createJiti);
     clearPluginDoctorContractRegistryCache();
+  });
+
+  it("freezes dynamic and declared live actions in stable owner order", () => {
+    const pluginRoot = makeTempDir();
+    fs.writeFileSync(
+      path.join(pluginRoot, "doctor-contract-api.cjs"),
+      `module.exports = {
+  stateMigrations: [{
+    id: "dynamic-action",
+    label: "Dynamic action",
+    detectLegacyState: () => null,
+    migrateLegacyState: () => ({ changes: [], warnings: [] }),
+  }],
+};\n`,
+    );
+    mocks.loadPluginManifestRegistry.mockReturnValue({
+      plugins: [
+        {
+          id: "dynamic-owner",
+          origin: "bundled",
+          rootDir: pluginRoot,
+          channels: [],
+          providers: [],
+          doctorContract: { stateMigrations: true },
+        },
+        {
+          id: "declared-owner",
+          origin: "bundled",
+          rootDir: pluginRoot,
+          channels: [],
+          providers: [],
+          doctorContract: { stateMigrations: [{ id: "declared-action" }] },
+        },
+      ],
+      diagnostics: [],
+    });
+
+    expect(
+      resolveLivePluginDoctorStateMigrationInventory({ config: {}, env: {} }).descriptors,
+    ).toEqual([
+      { pluginId: "declared-owner", id: "declared-action" },
+      { pluginId: "dynamic-owner", id: "dynamic-action" },
+    ]);
+  });
+
+  it("uses stable owner order while preserving each owner's declaration order", () => {
+    const acpxRoot = makeTempDir();
+    const codexRoot = makeTempDir();
+    fs.writeFileSync(
+      path.join(acpxRoot, "doctor-contract-api.cjs"),
+      `module.exports = { stateMigrations: [
+  { id: "z-prepare", label: "ACPX prepare", detectLegacyState: () => null, migrateLegacyState: () => ({ changes: [], warnings: [] }) },
+  { id: "a-finalize", label: "ACPX finalize", detectLegacyState: () => null, migrateLegacyState: () => ({ changes: [], warnings: [] }) },
+] };\n`,
+    );
+    fs.writeFileSync(
+      path.join(codexRoot, "doctor-contract-api.cjs"),
+      `module.exports = { stateMigrations: [
+  { id: "codex-only", label: "Codex only", detectLegacyState: () => null, migrateLegacyState: () => ({ changes: [], warnings: [] }) },
+] };\n`,
+    );
+    const codexRecord = {
+      id: "codex",
+      origin: "config" as const,
+      rootDir: codexRoot,
+      channels: [],
+      providers: [],
+      doctorContract: { stateMigrations: [{ id: "codex-only" }] },
+    };
+    const acpxRecord = {
+      id: "acpx",
+      origin: "bundled" as const,
+      rootDir: acpxRoot,
+      channels: [],
+      providers: [],
+      doctorContract: {
+        stateMigrations: [{ id: "z-prepare" }, { id: "a-finalize" }],
+      },
+    };
+    let discoveryOrder = [codexRecord, acpxRecord];
+    mocks.loadPluginManifestRegistry.mockImplementation(() => ({
+      // Deliberately model a config-selected Codex alias preceding bundled ACPX.
+      plugins: discoveryOrder,
+      diagnostics: [],
+    }));
+
+    expect(
+      resolveLivePluginDoctorStateMigrationInventory({ config: {}, env: {} }).descriptors,
+    ).toEqual([
+      { pluginId: "acpx", id: "z-prepare" },
+      { pluginId: "acpx", id: "a-finalize" },
+      { pluginId: "codex", id: "codex-only" },
+    ]);
+
+    discoveryOrder = [acpxRecord, codexRecord];
+    expect(
+      listPluginDoctorStateMigrationEntries({ config: {}, env: {} }).map(
+        ({ pluginId, migration }) => ({
+          pluginId,
+          id: migration.id,
+        }),
+      ),
+    ).toEqual([
+      { pluginId: "acpx", id: "z-prepare" },
+      { pluginId: "acpx", id: "a-finalize" },
+      { pluginId: "codex", id: "codex-only" },
+    ]);
   });
 
   it("loads a direct legacy detector without package or entry feature hints", async () => {
